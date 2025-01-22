@@ -2,6 +2,7 @@
 #include <SPI.h>
 #include <BluetoothSerial.h>
 #include "driver/gpio.h"
+#include <EEPROM.h>
 
 #define _sign(x) ((x) > 0 ? 1 : -1)  //Сигнум для смены приращения скорости на уменьшение
 // PWM configuration
@@ -234,6 +235,9 @@ void setup() {
   setSpeedMMS(0.5);
   setMinDuty(250);
   _tmr2 = tpid = millis();
+  static long controlPos_Saved;
+  EEPROM.get(0, controlPos_Saved);
+  controlPos = _targetPos = controlPos_Saved;
 }
 
 int8_t fl = 1;
@@ -572,7 +576,7 @@ void movement(int _Duty, int motor) {  //Приведение ШИМ к мини
 void setMillimeters(float millimeters) {
 
   if (millimeters < 0) {
-    dir = -1;
+    //dir = -1;
     Serial.println("Revers");
   } else {
     dir = 1;
@@ -580,7 +584,7 @@ void setMillimeters(float millimeters) {
 
   _targetPos = (float)((millimeters * (float)ratio) / 1.0);  //1.0 - шаг винта.
   Serial.println("_targetPos: " + String(_targetPos));
-  _targetPos = abs(_targetPos);
+  //_targetPos = abs(_targetPos);
 }
 
 void setSpeedMMS(float millimetersSec) {
@@ -593,7 +597,7 @@ void setSpeedMMS(float millimetersSec) {
 void setTarget(long TargetPos) {
 
   if (TargetPos < 0) {
-    dir = -1;
+    //dir = -1;
     Serial.println("Revers");
   } else {
     dir = 1;
@@ -607,7 +611,7 @@ void setObor(float ob) {
 
   dir = 1;
   if (ob < 0) {  //Инверсия направления для отрицательной позиции
-    dir = -1;
+    //dir = -1;
     Serial.println("Revers");
   }
 
@@ -615,13 +619,13 @@ void setObor(float ob) {
   _targetPos = (round(ob * ratio));  //ratio - число тиков на оборот
   Serial.println("_targetPos: " + String(_targetPos));
 
-  _targetPos = abs(_targetPos);  //ratio - число тиков на оборот
+  //_targetPos = abs(_targetPos);  //ratio - число тиков на оборот
 }
 
 void setDeg(long Deg) {
 
   if (Deg < 0) {
-    dir = -1;
+    //dir = -1;
     Serial.println("Revers");
   } else {
     dir = 1;
@@ -629,7 +633,7 @@ void setDeg(long Deg) {
 
   Serial.println("Deg: " + String(Deg));
   Serial.println("_targetPos: " + String(_targetPos));
-  _targetPos = abs(Deg * ratio / 360);
+  _targetPos = Deg * ratio / 360;
 }
 
 void setRatio(uint16_t _ratio, uint8_t precision) {
@@ -812,10 +816,20 @@ void inputData() {
 
       uint8_t vpos = dannie.indexOf("vel") + 3;
       String vel = dannie.substring(vpos, vpos + 6);
-      int receivedvelocity = constrain(vel.toInt(), 1, 17000);
+      int receivedvelocity = constrain(vel.toInt(), 0, 17000);
       Serial.println("received velocity: " + String(receivedvelocity));
       //recalculation(1, receivedspeed);
       _maxSpeed = receivedvelocity;
+    }
+
+    if (dannie.indexOf("velMMS") != -1) {
+
+      uint8_t velMMSpos = dannie.indexOf("velMMS") + 6;
+      String velMMS = dannie.substring(velMMSpos, velMMSpos + 6);
+      float receivedvelMMS = constrain(velMMS.toFloat(), 0, 3.5);
+      Serial.println("received velocity in mm/s: " + String(receivedvelMMS));
+      //recalculation(1, receivedspeed);
+      setSpeedMMS(receivedvelMMS);
     }
 
     if (dannie.indexOf("tpos") != -1) {
@@ -886,8 +900,49 @@ void inputData() {
       uint8_t Zpos = dannie.indexOf("Z") + 1;
       String Zrec = dannie.substring(Zpos, Zpos + 6);
       long receivedZ = constrain(Zrec.toInt(), -250000, 250000);
-      Serial.println("received PID MAX Duty: " + String(receivedZ));
-      _targetPos += receivedZ;
+      Serial.println("received piston pusher Z shift in mm: " + String(receivedZ));
+      _targetPos += receivedZ*ratio;
+      _targetPos = constrain(_targetPos, -250000, 250000);
+    }
+
+    if (dannie.indexOf("Zob") != -1) {
+
+      uint8_t Zobpos = dannie.indexOf("Zob") + 3;
+      String Zobrec = dannie.substring(Zobpos, Zobpos + 6);
+      long receivedZob = constrain(Zobrec.toInt(), -200, 200);
+      Serial.println("received piston pusher Z shift in turns: " + String(receivedZob));
+      _targetPos += receivedZob*ratio;
+      _targetPos = constrain(_targetPos, -250000, 250000);
+    }
+
+    if (dannie.indexOf("Ztick") != -1) {
+
+      uint8_t Ztickpos = dannie.indexOf("Ztick") + 5;
+      String Ztickrec = dannie.substring(Ztickpos, Ztickpos + 6);
+      long receivedZtick = constrain(Ztickrec.toInt(), -250000, 250000);
+      Serial.println("received piston pusher Z shift in ticks: " + String(receivedZtick));
+      _targetPos += receivedZtick;
+      _targetPos = constrain(_targetPos, -250000, 250000);
+    }
+
+    if (dannie.indexOf("tposMMS") != -1) {
+
+      uint8_t tposMMSpos = dannie.indexOf("tposMMS") + 7;
+      String tposMMSrec = dannie.substring(tposMMSpos, tposMMSpos + 7);
+      float receivedtposMMS = constrain(tposMMSrec.toFloat(), -200, 200);
+      Serial.println("received target position in mm: " + String(receivedtposMMS));
+      setMillimeters(receivedtposMMS);
+
+    }
+
+    if (dannie.indexOf("tposob") != -1) {
+
+      uint8_t tposobpos = dannie.indexOf("tposob") + 6;
+      String tposobrec = dannie.substring(tposobpos, tposobpos + 6);
+      float receivedtposob = constrain(tposobrec.toFloat(), -200, 200);
+      Serial.println("received target position in mm: " + String(receivedtposob));
+      setObor(receivedtposob);
+
     }
 
     volatile long bauds[] = { 1200, 2400, 4800, 9600, 19200, 31250, 38400, 57600, 74880, 115200, 230400, 250000, 460800, 500000 };
