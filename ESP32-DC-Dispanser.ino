@@ -75,13 +75,13 @@ const bool level = 1;  //направление для всех пинов
 int Dduty = 0;
 
 
-int _accel = 3000;    //ускорение в отсчётах энкодера в секунду
+int _accel = 5000;     //ускорение в отсчётах энкодера в секунду
 int _maxSpeed = 8000;  //максимальная скорость в отсчётах энкодера в секунду
 
-const uint8_t _dt = 8;          //Временной шаг вызова функции регулирования
+const uint8_t _dt = 8;           //Временной шаг вызова функции регулирования
 float _dts = (float)_dt / 1000;  //Временной шаг для подсчёта в единицах в секунду теор. значений скоростей V и позиций pos
 uint32_t _tmr2 = 0;              //Переменная таймера comp_cur_pos для подсчёта значений V и pos
-long _targetPos = 83440;             //Целевое положение в отсчётах энкодера
+long _targetPos = 0;             //Целевое положение в отсчётах энкодера
 int dir = -1;                    //Направление 1 - вперёд // -1 - назад
 
 long controlPos = 0;     //Теоретическое положение, идущее в PID
@@ -123,7 +123,8 @@ float T_Theoretic = 0;
 int ratio = 8344;  //8433 = 28*298
 ///////////////////////////////////////////////////////////////////////////
 ////////////////////////////////ПИД РЕГУЛЯТОР//////////////////////////////
-int PWM1 = 0, PWM2 = 0; long tpid = 0;
+int PWM1 = 0, PWM2 = 0;
+long tpid = 0;
 
 long _previnput = 0, _previnput2 = 0;
 float integral = 0.0000;
@@ -133,9 +134,9 @@ bool cutoff = 0;
 int stopzone = 10, stopzone2 = 10;
 
 
-float kp = 1.75;  // 2x: 0.35;  4x: 0.085		// (знач. по умолчанию)0.1 0.5 0.05
+float kp = 0.55;  // 2x: 0.35;  4x: 0.085		// (знач. по умолчанию)0.1 0.5 0.05
   // интегральный - позволяет нивелировать ошибку со временем, имеет накопительный эффект
-float ki = 0.00000015;  //2x: 0.000005 4x: 0.00000011 0.00000015 для высок.
+double ki = 0.00000005;  //2x: 0.000005 4x: 0.00000011 0.00000015 для высок.
 // дифференциальный. Позволяет чуть сгладить рывки, но при большом значении
 // сам становится причиной рывков и раскачки системы!
 float kd = 0.35;  //2x: 35 - 2 прерывания 4x: 0.75 7.75 для высок скоростей
@@ -155,7 +156,7 @@ int N = 0;  // Число шагов дискретизации
 int8_t curve = 1;  //Тип кривой. -1 - пересечение парабол 2 - нормальный случай, 1 - только ускорение и равномерное
 
 long timer1 = 0;  //ControlPos2 таймер
-long f = 0;      //счётчик приращения
+long f = 0;       //счётчик приращения
 
 /////////////////////////////////////////////////////////////////////
 
@@ -175,6 +176,8 @@ int16_t du = 0, du1 = 0;
 /////////////////////////////////////////////////////////////////////
 
 bool offtrig = 0;
+
+bool PrintDataFlag = 1;
 
 void setup() {
 
@@ -221,21 +224,22 @@ void setup() {
 
   // Attach the PWM channel to the chosen motor pin
   ledcAttach(PWM2_PIN, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcAttach(PWM1_PIN, PWM_FREQUENCY, PWM_RESOLUTION);
   delay(1000);
   Calculus(_accel, _maxSpeed, _targetPos, _dts);
 
   setRatio(8344, 4);
-  setObor(1);
+  setObor(0);
   //setMillimeters(0);
-  //setSpeedMMS(2);
-  setMinDuty(450);
+  setSpeedMMS(0.5);
+  setMinDuty(250);
   _tmr2 = tpid = millis();
-
 }
 
 int8_t fl = 1;
 void loop() {
 
+  inputData();
   comp_cur_pos();
   // If Timer has fired
   // if (xSemaphoreTake(timerSemaphore, 0) == pdTRUE) {
@@ -272,18 +276,21 @@ void loop() {
   static uint32_t tim0;
   //tim0 = millis();
   if (millis() - tpid >= _dt) {
-
+    comp_cur_pos();
     //PWM1 = PIDcalc(controlPos, encoderValue1, kp, ki, kd, _dt, dir, 0, offtrig);
     //movement2(PWM1, 1);
     PWM2 = PIDcalc(controlPos, encoderValue2, kp, ki, kd, _dt, dir, 0, offtrig);
     movement(PWM2, 2);
+    PWM1 = PIDcalc(controlPos, encoderValue2, kp, ki, kd, _dt, dir, 0, offtrig);
+    movement(PWM1, 1);
 
     tpid = millis();
   }
   if (millis() - tim0 >= 50) {
-    
-    POSITIONS();
-    //PWMPORT();
+
+    if (PrintDataFlag == 1) {
+      POSITIONS();
+    }  //PWMPORT();
     tim0 = millis();
   }
 }
@@ -394,19 +401,23 @@ void comp_cur_pos() {  // USes timpos & _tmr2  (long encoder, uint8_t motor)
   unsigned long timpos = millis();
 
   if (timpos - _tmr2 >= _dt) {
-    _dts = (timpos - _tmr2) / 1000.0;
+    _dts = (_dt) / 1000.0;  //(timpos - _tmr2) / 1000.0;
     _tmr2 = millis();
     long err = _targetPos - controlPos;  // "ошибка" позиции
     if (err != 0) {
       if (_accel != 0) {
+
         bool thisDir = (controlSpeed * controlSpeed / _accel / 2.0 >= abs(err));  // пора тормозить (false до приближения к параболе торможения обр. от ускор.)
         controlSpeed += _accel * _dts * (thisDir ? -_sign(controlSpeed) : _sign(err));
+        //Serial.println("Cont SPEED VAR 1: " + String(controlSpeed));
+
       } else {
         controlSpeed = err / _dts;  // профиль постоянной скорости
+        //Serial.println("Cont SPEED VAR 2: " + String(controlSpeed));
       }
       controlSpeed = constrain(controlSpeed, -_maxSpeed, _maxSpeed);
       controlPos += controlSpeed * _dts;
-      controlPos = constrain(controlPos, -_targetPos, _targetPos);
+      controlPos = constrain(controlPos, -150000, 150000);
     }
     //return controlPos;
     //Serial.print(encoderValue1);
@@ -421,34 +432,33 @@ int PIDcalc(long setPoint, long current, float kp, float ki, float kd, float DTS
 
   //if (!off) {
 
-    if (dir == -1) {
+  if (dir == -1) {
 
-      setPoint = -setPoint;
+    setPoint = -setPoint;
+  }
+
+  float Duty = 0;
+  long err1 = setPoint - current;
+  long deltainput = _previnput - err1;
+  _previnput = err1;
+  Duty = (float)(err1 * kp);
+  integral += (float)err1 * ki * DTS;
+  Duty += (float)deltainput * kd / DTS + integral;
+
+  if (cutoff) {  // отсечка (для режимов позиции)
+    if (abs(err1) < stopzone) {
+      integral = 0;
+      Duty = 0;
+      // Serial.println("null");
     }
+  }
 
-    float Duty = 0;
-    long err1 = setPoint - current;
-    long deltainput = _previnput - err1;
-    _previnput = err1;
-    Duty = (float)(err1 * kp);
-    integral += (float)err1 * ki * DTS;
-    Duty += (float)deltainput * kd / DTS + integral;
-
-    if (cutoff) {  // отсечка (для режимов позиции)
-      if (abs(err1) < stopzone) {
-        integral = 0;
-        Duty = 0;
-        // Serial.println("null");
-      }
-    }
-
-    Duty = constrain(Duty, -_maxDuty, _maxDuty);
-    return int(Duty);
-    //Serial.println(Duty);
+  Duty = constrain(Duty, -_maxDuty, _maxDuty);
+  return int(Duty);
+  //Serial.println(Duty);
   //}
   // if (Duty == 0) {Serial.println("st");}
   //return Dduty;
-  
 }
 
 void movement(int _Duty, int motor) {  //Приведение ШИМ к минимальному. Передача сигнала
@@ -487,7 +497,7 @@ void movement(int _Duty, int motor) {  //Приведение ШИМ к мини
     //Serial.println(Dduty);
     integral = 0;
     stopper = 1;
-   // offtrig = 1;
+    // offtrig = 1;
 
     //delay(100);
 
@@ -573,10 +583,10 @@ void setMillimeters(float millimeters) {
   _targetPos = abs(_targetPos);
 }
 
-void setSpeedMMS(int8_t millimetersSec) {
+void setSpeedMMS(float millimetersSec) {
 
-  _maxSpeed = abs(millimetersSec) * ratio;
-  constrain(_maxSpeed, 0, 15000);
+  _maxSpeed = millimetersSec * ratio;
+  constrain(_maxSpeed, 0, 17000);
   Serial.println("_maxSpeed: " + String(_maxSpeed));
 }
 
@@ -606,7 +616,6 @@ void setObor(float ob) {
   Serial.println("_targetPos: " + String(_targetPos));
 
   _targetPos = abs(_targetPos);  //ratio - число тиков на оборот
-
 }
 
 void setDeg(long Deg) {
@@ -698,34 +707,38 @@ void Calculus(int acceleration, int V, long targetPos, float dts) {  //Подс�
 ///////////////////////////////////////////////////////////////
 /////////////////////СБОР ДАННЫХ И ВЫВОДЫ//////////////////////
 
+bool posflag = 1;
 void POSITIONS() {  //Вывод позиций столбцами
 
-  Serial.println();
-  //Serial.println(_targetPos);
-  Serial.print(controlPos);
-  //Serial.print(Velocity1);
-  //Serial.print(_duty);
-  //Serial.print(controlPos);
-  //Serial.print(", ");
-  //Serial.print(abs(encoderValue1));
-  //Serial.print(Velocity1);
-  //Serial.print(_duty);
-  //Serial.print(controlPos);
-  Serial.print(", ");
+  if (posflag == 1) {
 
-  //Serial.print(_duty2);
-  Serial.print(abs(encoderValue2));
+    Serial.println();
+    //Serial.println(_targetPos);
+    Serial.print(controlPos);
+    //Serial.print(Velocity1);
+    //Serial.print(_duty);
+    //Serial.print(controlPos);
+    //Serial.print(", ");
+    //Serial.print(abs(encoderValue1));
+    //Serial.print(Velocity1);
+    //Serial.print(_duty);
+    //Serial.print(controlPos);
+    Serial.print(", ");
 
-  // Serial.print(", ");
-  // Serial.print(abs(integral));
+    //Serial.print(_duty2);
+    Serial.print(abs(encoderValue2));
 
-  // Serial.print(", ");
-  // Serial.print(abs(integral2));
+    // Serial.print(", ");
+    // Serial.print(abs(integral));
+
+    // Serial.print(", ");
+    // Serial.print(abs(integral2));
 
 
-  //Serial.print(controlSpeed/1000);
-  //Serial.print(", ");
-  //Serial.print(Velocity2);
+    //Serial.print(controlSpeed/1000);
+    //Serial.print(", ");
+    //Serial.print(Velocity2);
+  }
 }
 
 void PWMPORT() {
@@ -764,3 +777,179 @@ void VELS() {  //Вывод скоростей  столбцами
   //Serial.print(Velocity2);
 }
 
+////////////////////ОБРАБОТКА ВХОДА//////////////////
+
+void inputData() {
+
+  if (Serial.available() > 0) {  //если есть доступные данные
+
+    //Serial.println("Serial.available()");
+    char buffer[] = { "" };
+    String dannie = "";
+    int j = 0;
+
+    while (Serial.available()) {
+
+      while (Serial.available()) {
+        dannie = dannie + Serial.readString();
+      }
+      //   if (Serial.readBytes(buffer, 1)) {
+      //     //Serial.print("I received: ");
+      //     //Serial.println(buffer[0]);
+      //     dannie = dannie + buffer[0];
+      //   }
+      //   // j++;
+      //   // Serial.print(j);
+      //   // Serial.print(" :  ");
+      //   //Serial.println(buffer[0]);
+    }
+
+    dannie.trim();
+    //Serial.println("");
+    Serial.println("Received: " + dannie);
+
+    if (dannie.indexOf("vel") != -1) {
+
+      uint8_t vpos = dannie.indexOf("vel") + 3;
+      String vel = dannie.substring(vpos, vpos + 6);
+      int receivedvelocity = constrain(vel.toInt(), 1, 17000);
+      Serial.println("received velocity: " + String(receivedvelocity));
+      //recalculation(1, receivedspeed);
+      _maxSpeed = receivedvelocity;
+    }
+
+    if (dannie.indexOf("tpos") != -1) {
+
+      uint8_t tppos = dannie.indexOf("tpos") + 4;
+      String tposrec = dannie.substring(tppos);
+      long receivedtpos = constrain(tposrec.toInt(), -250000, 250000);
+      Serial.println("received target position: " + String(receivedtpos));
+      _targetPos = receivedtpos;
+    }
+
+    if (dannie.indexOf("acc") != -1) {
+
+      uint8_t accpos = dannie.indexOf("acc") + 3;
+      String accrec = dannie.substring(accpos, accpos + 6);
+      int receivedacc = constrain(accrec.toInt(), 0, 25000);
+      Serial.println("received acceleration: " + String(receivedacc));
+      _accel = receivedacc;
+    }
+
+    if (dannie.indexOf("kp") != -1) {
+
+      uint8_t kppos = dannie.indexOf("kp") + 2;
+      String kprec = dannie.substring(kppos, kppos + 6);
+      float receivedkp = constrain(kprec.toFloat(), 0, 100);
+      Serial.println("received PID kp: " + String(receivedkp));
+      kp = receivedkp;
+    }
+
+    if (dannie.indexOf("ki") != -1) {
+
+      uint8_t kipos = dannie.indexOf("ki") + 2;
+      String kirec = dannie.substring(kipos, kipos + 8);
+      double receivedki = constrain(kirec.toDouble(), 0.0, 100.0);
+      Serial.println("received PID ki: " + String(receivedki));
+      ki = receivedki;
+    }
+
+    if (dannie.indexOf("kd") != -1) {
+
+      uint8_t kdpos = dannie.indexOf("kd") + 2;
+      String kdrec = dannie.substring(kdpos, kdpos + 6);
+      double receivedkd = constrain(kdrec.toDouble(), 0.0, 100.0);
+      Serial.println("received PID kd: " + String(receivedkd));
+      kd = receivedkd;
+    }
+
+    if (dannie.indexOf("minDuty") != -1) {
+
+      uint8_t minDutypos = dannie.indexOf("minDuty") + 7;
+      String minDutyrec = dannie.substring(minDutypos, minDutypos + 6);
+      int receivedminDuty = constrain(minDutyrec.toInt(), 0, _maxDuty);
+      Serial.println("received PID MIN Duty: " + String(receivedminDuty));
+      setMinDuty(receivedminDuty);
+    }
+
+    if (dannie.indexOf("maxDuty") != -1) {
+
+      uint8_t maxDutypos = dannie.indexOf("maxDuty") + 7;
+      String maxDutyrec = dannie.substring(maxDutypos, maxDutypos + 6);
+      long receivedmaxDuty = constrain(maxDutyrec.toInt(), 0, 1000000);
+      Serial.println("received PID MAX Duty: " + String(receivedmaxDuty));
+      _maxDuty = receivedmaxDuty;
+    }
+
+    if (dannie.indexOf("Z") != -1) {
+
+      uint8_t Zpos = dannie.indexOf("Z") + 1;
+      String Zrec = dannie.substring(Zpos, Zpos + 6);
+      long receivedZ = constrain(Zrec.toInt(), -250000, 250000);
+      Serial.println("received PID MAX Duty: " + String(receivedZ));
+      _targetPos += receivedZ;
+    }
+
+    volatile long bauds[] = { 1200, 2400, 4800, 9600, 19200, 31250, 38400, 57600, 74880, 115200, 230400, 250000, 460800, 500000 };
+
+    if (dannie.indexOf("COM") != -1) {
+
+      bool supported = false;
+
+      uint8_t COMBaudpos = dannie.indexOf("COM") + 3;
+      PrintDataFlag = 0;
+      Serial.println("/////Stop Data sending/////");
+      long rec = dannie.substring(COMBaudpos).toInt();
+      Serial.println("COM baud REC: " + String(rec));
+      long NewBaud = constrain(rec, 1200, 500000);
+
+      for (int i = 0; i < sizeof(bauds) / 4; i++) {
+        Serial.println(bauds[i]);
+        if (bauds[i] == NewBaud) {
+
+          supported = true;
+          Serial.println("Supported baud: " + String(bauds[i]));
+          break;
+
+        } else {
+          supported = false;
+        }
+      }
+
+      if (supported == false) {
+
+        Serial.println("Invalid/Insupported baud");
+        Serial.println("NewBaud Is: " + String(NewBaud));
+        NewBaud = 115200;
+      }
+
+      Serial.println("NEW BAUD: " + String(NewBaud));
+
+      if (NewBaud >= 1200) {
+
+        Serial.end();
+        delay(1500);
+
+        Serial.begin(NewBaud);
+        delay(1000);
+        Serial.println("Successfully applied baud: " + String(NewBaud));
+      }
+    }
+
+    if (dannie.indexOf("PD") != -1) {
+
+      Serial.println("PD");
+      PrintDataFlag = !PrintDataFlag;
+
+      if (PrintDataFlag == 1) {
+
+        Serial.println("///////////Data:///////////");
+
+      } else {
+
+        Serial.println("/////Stop Data sending/////");
+      }
+    }
+    //Serial.println(dannie);
+  }
+}
