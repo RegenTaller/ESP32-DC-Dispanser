@@ -141,6 +141,13 @@ double ki = 0.00000005;  //2x: 0.000005 4x: 0.00000011 0.00000015 для выс�
 // дифференциальный. Позволяет чуть сгладить рывки, но при большом значении
 // сам становится причиной рывков и раскачки системы!
 float kd = 0.35;  //2x: 35 - 2 прерывания 4x: 0.75 7.75 для высок скоростей
+
+float kpVel = 0.55;  // 2x: 0.35;  4x: 0.085		// (знач. по умолчанию)0.1 0.5 0.05
+  // интегральный - позволяет нивелировать ошибку со временем, имеет накопительный эффект
+double kiVel = 0.00000005;  //2x: 0.000005 4x: 0.00000011 0.00000015 для высок.
+// дифференциальный. Позволяет чуть сгладить рывки, но при большом значении
+// сам становится причиной рывков и раскачки системы!
+float kdVel = 0.35;  //2x: 35 - 2 прерывания 4x: 0.75 7.75 для высок скоростей
 //////////////////////////////////////////////////////////////////////
 
 ////////////////Альтернативная "АНАЛИТИЧЕСКАЯ" кривая/////////////////
@@ -285,15 +292,21 @@ void loop() {
     //movement2(PWM1, 1);
     PWM2 = PIDcalc(controlPos, encoderValue2, kp, ki, kd, _dt, dir, 0, offtrig);
     movement(PWM2, 2);
+    int PWM2Vel = PIDcalcVels(controlSpeed, Velocity2, kp, ki, kd, _dt, dir, 0, offtrig);
+    movement(PWM2, 2);
     PWM1 = PIDcalc(controlPos, encoderValue2, kp, ki, kd, _dt, dir, 0, offtrig);
     movement(PWM1, 1);
+
+    
 
     tpid = millis();
   }
   if (millis() - tim0 >= 50) {
 
     if (PrintDataFlag == 1) {
-      POSITIONS();
+      Velocities(50);
+      //POSITIONS();
+      VELS();
     }  //PWMPORT();
     tim0 = millis();
   }
@@ -344,12 +357,12 @@ void pin_A2_ISR() {
 
     //enc1++;
     encoderValue2++;
-    // encREF1++;
+    encREF2++;
   } else {
 
     //enc1--;
     encoderValue2--;
-    // encREF1--;
+    encREF2--;
   }
   //enc1++;
 }
@@ -359,12 +372,12 @@ void pin_B2_ISR() {
 
     //enc1--;
     encoderValue2--;
-    // encREF1--;
+    encREF2--;
   } else {
 
     //enc1++;
     encoderValue2++;
-    // encREF1++;
+    encREF2++;
   }
   //enc1++;
 }
@@ -373,14 +386,14 @@ void pin_A1_ISR() {
 
   if (!(gpio_get_level(APHASE1_PIN)) == !(gpio_get_level(BPHASE1_PIN))) {  //2 pin - PE4 PINE & 0b00010000 3 pin - PE5 PINE & 0b00100000
 
-    enc1++;
+    //enc1++;
     encoderValue1++;
-    // encREF1++;
+    encREF1++;
   } else {
 
-    enc1--;
+    //enc1--;
     encoderValue1--;
-    // encREF1--;
+    encREF1--;
   }
   //enc1++;
 }
@@ -388,12 +401,12 @@ void pin_A1_ISR() {
 void pin_B1_ISR() {
   if (!(gpio_get_level(APHASE1_PIN)) == !(gpio_get_level(BPHASE1_PIN))) {  // 2 pin - PE4 PINE & 0b00010000 3 pin - PE5 PINE & 0b00100000
 
-    enc1--;
+    //enc1--;
     encoderValue1--;
-    // encREF1--;
+    encREF1--;
   } else {
 
-    enc1++;
+    //enc1++;
     encoderValue1++;
     encREF1++;
   }
@@ -448,6 +461,39 @@ int PIDcalc(long setPoint, long current, float kp, float ki, float kd, float DTS
   Duty = (float)(err1 * kp);
   integral += (float)err1 * ki * DTS;
   Duty += (float)deltainput * kd / DTS + integral;
+
+  if (cutoff) {  // отсечка (для режимов позиции)
+    if (abs(err1) < stopzone) {
+      integral = 0;
+      Duty = 0;
+      // Serial.println("null");
+    }
+  }
+
+  Duty = constrain(Duty, -_maxDuty, _maxDuty);
+  return int(Duty);
+  //Serial.println(Duty);
+  //}
+  // if (Duty == 0) {Serial.println("st");}
+  //return Dduty;
+}
+
+int PIDcalcVels(long setVelocity, long currentVelocity, float kp, float ki, float kd, float DTS, int dir, bool cutoff, bool off) {  //ПИД для 1 первого мотора
+
+  //if (!off) {
+  static long prev_err; static float integral_vel; 
+  if (dir == -1) {
+
+    setVelocity = -setVelocity;
+  }
+
+  float Duty = 0;
+  long err1 = setVelocity - currentVelocity;
+  long deltainput = prev_err - err1;
+  prev_err = err1;
+  Duty = (float)(err1 * kpVel);
+  integral_vel += (float)err1 * kiVel * DTS;
+  Duty += (float)deltainput * kdVel / DTS + integral_vel;
 
   if (cutoff) {  // отсечка (для режимов позиции)
     if (abs(err1) < stopzone) {
@@ -590,7 +636,7 @@ void setMillimeters(float millimeters) {
 void setSpeedMMS(float millimetersSec) {
 
   _maxSpeed = millimetersSec * ratio;
-  constrain(_maxSpeed, 0, 17000);
+  constrain(_maxSpeed, 0, 25000);
   Serial.println("_maxSpeed: " + String(_maxSpeed));
 }
 
@@ -763,7 +809,7 @@ void VELS() {  //Вывод скоростей  столбцами
 
   Serial.println();
   //Serial.println(_targetPos);
-  Serial.print(controlSpeed / 1000);
+  Serial.print(controlSpeed);
   //Serial.print(Velocity1);
   //Serial.print(_duty);
   //Serial.print(controlPos);
@@ -1007,4 +1053,47 @@ void inputData() {
     }
     //Serial.println(dannie);
   }
+}
+
+void Velocities(int period) {
+
+  // if (millis() - t1 >= period) {
+
+  //   //8344 = 28 * 298 импульсов на оборот
+  // t1 = millis();
+
+  //noInterrupts();
+  encREF1copy = encREF1;  //int16_t
+  encREF2copy = encREF2;  //int16_t
+  encREF1 = encREF2 = 0;
+  //interrupts();
+
+  Velocity1 = (float)encREF1copy * 1000.0 / (float)period;
+  //Velocity1 = filter(Velocity1);
+  Velocity2 = (float)encREF2copy * 1000.0 / (float)period;
+  //Velocity1 = filter(Velocity1);
+  //Velocity2 = filter(Velocity2);
+  //Serial.println(Velocity1);
+  //Serial.println(encREF1copy);
+  //controlPosFl = (float)controlPos/ratio;
+  //Serial.println(encoderValue2);
+  //}
+}
+
+int filter(int velocity) {
+    _buf[_count] = velocity;
+    if (++_count >= 3) _count = 0;
+    int middle = 0;
+    if ((_buf[0] <= _buf[1]) && (_buf[0] <= _buf[2])) {
+        middle = (_buf[1] <= _buf[2]) ? _buf[1] : _buf[2];
+    } else {
+        if ((_buf[1] <= _buf[0]) && (_buf[1] <= _buf[2])) {
+            middle = (_buf[0] <= _buf[2]) ? _buf[0] : _buf[2];
+        }
+        else {
+            middle = (_buf[0] <= _buf[1]) ? _buf[0] : _buf[1];
+        }
+    }
+    _middle_f += (middle-_middle_f) * 0.7;
+    return _middle_f;
 }
