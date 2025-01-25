@@ -76,10 +76,10 @@ const bool level = 1;  //направление для всех пинов
 int Dduty = 0;
 
 
-int _accel = 5000;     //ускорение в отсчётах энкодера в секунду
-int _maxSpeed = 8000;  //максимальная скорость в отсчётах энкодера в секунду
+int _accel = 30000;    //ускорение в отсчётах энкодера в секунду
+int _maxSpeed = 8344;  //максимальная скорость в отсчётах энкодера в секунду
 
-const uint8_t _dt = 8;           //Временной шаг вызова функции регулирования
+const uint8_t _dt = 15;          //Временной шаг вызова функции регулирования
 float _dts = (float)_dt / 1000;  //Временной шаг для подсчёта в единицах в секунду теор. значений скоростей V и позиций pos
 uint32_t _tmr2 = 0;              //Переменная таймера comp_cur_pos для подсчёта значений V и pos
 long _targetPos = 0;             //Целевое положение в отсчётах энкодера
@@ -105,10 +105,18 @@ volatile int lastEncoded2 = 0;    // Here updated value of encoder store.
 volatile long encoderValue2 = 0;  // Raw encoder value
 volatile long encREF2 = 0;        //сбрасываемое значениеэнкодера для скорости
 
-int16_t encREF1copy = 0;
-int16_t encREF2copy = 0;
+volatile long encREF1N = 0;  // Raw encoder value
+volatile long encREF2N = 0;
+
+int32_t encREF1copy = 0;
+int32_t encREF2copy = 0;
 float Velocity1 = 0.0;  //Переменная мгновенной скорости 1
 float Velocity2 = 0.0;  //Переменная мгновенной скорости 2
+
+float Velocity1N = 0.0;  //Переменная мгновенной скорости 1
+float Velocity2N = 0.0;  //Переменная мгновенной скорости 2
+int32_t encREF1copyN = 0;
+int32_t encREF2copyN = 0;
 //uint8_t freq1 = 10; // частота опроса
 
 uint8_t per1 = 50;  ///freq1; //период опроса скоростей 1000/60 = 17 мс
@@ -187,6 +195,14 @@ bool offtrig = 0;
 
 bool PrintDataFlag = 1;
 
+double rkp = 0.010000;
+uint32_t reduceFlag;
+int velfl = 0;
+float rconst;
+int defaultPWM = _minDuty;
+int defaultPWMFlag;
+int prevPWM;
+
 void setup() {
 
   Serial.begin(115200);
@@ -239,7 +255,7 @@ void setup() {
   setRatio(8344, 4);
   setObor(0);
   //setMillimeters(0);
-  setSpeedMMS(0.5);
+  setSpeedMMS(1);
   setMinDuty(250);
   _tmr2 = tpid = millis();
   static long controlPos_Saved;
@@ -248,32 +264,11 @@ void setup() {
 }
 
 int8_t fl = 1;
+
 void loop() {
 
   inputData();
   comp_cur_pos();
-  // If Timer has fired
-  // if (xSemaphoreTake(timerSemaphore, 0) == pdTRUE) {
-  //   uint32_t isrCount = 0, isrTime = 0;
-  //   // Read the interrupt count and time
-  //   portENTER_CRITICAL(&timerMux);
-  //   isrCount = isrCounter;
-  //   isrTime = lastIsrAt;
-  //   portEXIT_CRITICAL(&timerMux);
-  //   // Print it
-  //   Serial.print("onTimer no. ");
-  //   Serial.print(isrCount);
-  //   Serial.print(" at ");
-  //   Serial.print(isrTime);
-  //   Serial.println(" ms");
-  //   SerialBT.print("onTimer no. ");
-  //   SerialBT.print(isrCount);
-  //   SerialBT.print(" at ");
-  //   SerialBT.print(isrTime);
-  //   SerialBT.println(" ms");
-  // }
-
-  // If button is pressed
   if (digitalRead(BTN_STOP_ALARM) == LOW) {
     // If timer is still running
     if (timer) {
@@ -282,34 +277,107 @@ void loop() {
       timer = NULL;
     }
   }
+  prevPWM = PWM2;
 
-  CommunicationBT();
+  //CommunicationBT();
+
   static uint32_t tim0;
-  //tim0 = millis();
   if (millis() - tpid >= _dt) {
+
     comp_cur_pos();
-    //PWM1 = PIDcalc(controlPos, encoderValue1, kp, ki, kd, _dt, dir, 0, offtrig);
-    //movement2(PWM1, 1);
-    PWM2 = PIDcalc(controlPos, encoderValue2, kp, ki, kd, _dt, dir, 0, offtrig);
-    movement(PWM2, 2);
-    int PWM2Vel = PIDcalcVels(controlSpeed, Velocity2, kp, ki, kd, _dt, dir, 0, offtrig);
-    movement(PWM2, 2);
-    PWM1 = PIDcalc(controlPos, encoderValue2, kp, ki, kd, _dt, dir, 0, offtrig);
-    movement(PWM1, 1);
-
-    
-
-    tpid = millis();
-  }
-  if (millis() - tim0 >= 50) {
-
+    Velocities(_dt);
+    velfl = 1;
     if (PrintDataFlag == 1) {
-      Velocities(50);
       //POSITIONS();
       VELS();
-    }  //PWMPORT();
-    tim0 = millis();
+    }
+    PWM2 = PIDcalc(controlPos, encoderValue2, kp, ki, kd, _dt, dir, 0, offtrig);
+    tpid = millis();
   }
+
+  static uint32_t tim2;
+  bool thisDir = (controlSpeed * controlSpeed / _accel / 2.0 >= abs(_targetPos - encoderValue2));
+
+  if (millis() - tim2 >= 7) {
+
+    VelocitiesN();
+    //Serial.println("Velo: " + String(Velocity2N));
+
+    if (abs(Velocity2N) >= _maxSpeed - 25 && defaultPWMFlag == 0) {  // Фиксация значения нормльного PWM
+
+      defaultPWMFlag = 1;
+      defaultPWM = PWM2;
+      Serial.println("DEFAULT PWM SET: " + String(defaultPWM));
+      Serial.println("DEFAULT Velocity2N: " + String(Velocity2N));
+    }
+
+    static long adjDefPWMtimer;
+    if (abs(Velocity2N) > _maxSpeed && abs(prevPWM) <= abs(defaultPWM)) {
+
+      if (millis() - adjDefPWMtimer >= 100) {
+        defaultPWM = constrain(abs(defaultPWM) - ((_maxDuty / 100) * (_dt * 2 / 10)), _minDuty, _maxDuty);
+        if (_maxSpeed < 0) {
+
+          defaultPWM = defaultPWM * -1;
+        }
+        Serial.println("DefPWM changed: " + String(defaultPWM));
+        Serial.println("Prev PWm: " + String(prevPWM));
+        Serial.println("Velo: " + String(Velocity2N));
+        adjDefPWMtimer = millis();
+      }
+    }
+
+    if (abs(Velocity2N) > _maxSpeed && thisDir == false) {  //Оперативная редукция ШИМ
+      if (rconst != 0) {
+        static long deltaV = abs(Velocity2N - _maxSpeed);
+        //Serial.println("CORR: " + String(Velocity2N));
+        if (_maxSpeed > 0) {
+
+          Serial.println("BEF: " + String(PWM2));
+          Serial.println("Vabs " + String(abs(Velocity2N)));
+          Serial.println("V " + String(Velocity2N));
+          Serial.println("max " + String(_maxSpeed));
+          Serial.println("encREF " + String(encREF2copyN));
+
+          PWM2 = PWM2 - (rconst * deltaV);
+          if (PWM2 < defaultPWM) {
+            PWM2 = defaultPWM;
+            //Serial.println("default PWM:" + String(defaultPWM));
+          }
+
+          Serial.println("AFT: " + String(PWM2));
+          Serial.println("Delta V " + String(deltaV));
+
+        } else {
+
+          Serial.println("BEF: " + String(PWM2));
+          PWM2 = PWM2 + (rconst * deltaV);
+          if (PWM2 > defaultPWM) {
+            PWM2 = defaultPWM;
+            //Serial.println("default PWM:" + String(defaultPWM));
+          }
+          Serial.println("AFT: " + String(PWM2));
+        }
+      }
+    }
+
+    tim2 = millis();
+    if (abs(PWM2) >= abs(defaultPWM) * 1.2 && abs(Velocity2N) >= _maxSpeed - 25 && rconst != 0 && defaultPWM >= _minDuty) {  //Отсечка увеличенного ШИМ, если скорость выше нужной
+
+      PWM2 = defaultPWM;
+    }
+
+    movement(PWM2, 2);
+  }
+
+
+  static uint32_t tim1;
+  if (millis() - tim1 >= 4) {
+
+    // Serial.println(PWM2);
+    tim1 = millis();
+  }
+  //Serial.println("real PWM: " + String(prevPWM));
 }
 
 void CommunicationBT() {
@@ -358,11 +426,13 @@ void pin_A2_ISR() {
     //enc1++;
     encoderValue2++;
     encREF2++;
+    encREF2N++;
   } else {
 
     //enc1--;
     encoderValue2--;
     encREF2--;
+    encREF2N--;
   }
   //enc1++;
 }
@@ -373,11 +443,13 @@ void pin_B2_ISR() {
     //enc1--;
     encoderValue2--;
     encREF2--;
+    encREF2N--;
   } else {
 
     //enc1++;
     encoderValue2++;
     encREF2++;
+    encREF2N++;
   }
   //enc1++;
 }
@@ -389,11 +461,13 @@ void pin_A1_ISR() {
     //enc1++;
     encoderValue1++;
     encREF1++;
+    encREF1N++;
   } else {
 
     //enc1--;
     encoderValue1--;
     encREF1--;
+    encREF1N--;
   }
   //enc1++;
 }
@@ -404,11 +478,13 @@ void pin_B1_ISR() {
     //enc1--;
     encoderValue1--;
     encREF1--;
+    encREF1N--;
   } else {
 
     //enc1++;
     encoderValue1++;
     encREF1++;
+    encREF1N++;
   }
   //enc1++;
 }
@@ -445,9 +521,14 @@ void comp_cur_pos() {  // USes timpos & _tmr2  (long encoder, uint8_t motor)
   }
 }
 
-int PIDcalc(long setPoint, long current, float kp, float ki, float kd, float DTS, int dir, bool cutoff, bool off) {  //ПИД для 1 первого мотора
+
+
+float rkpmax = 0.00;
+int PIDcalc(long setPoint, long current, float kp, float ki, float kd, float DT, int dir, bool cutoff, bool off) {  //ПИД для 1 первого мотора
 
   //if (!off) {
+  static long prevVelocity;
+  long velocity = Velocity2;
 
   if (dir == -1) {
 
@@ -459,8 +540,8 @@ int PIDcalc(long setPoint, long current, float kp, float ki, float kd, float DTS
   long deltainput = _previnput - err1;
   _previnput = err1;
   Duty = (float)(err1 * kp);
-  integral += (float)err1 * ki * DTS;
-  Duty += (float)deltainput * kd / DTS + integral;
+  integral += (float)err1 * ki * DT;
+  Duty += (float)deltainput * kd / DT + integral;
 
   if (cutoff) {  // отсечка (для режимов позиции)
     if (abs(err1) < stopzone) {
@@ -471,44 +552,88 @@ int PIDcalc(long setPoint, long current, float kp, float ki, float kd, float DTS
   }
 
   Duty = constrain(Duty, -_maxDuty, _maxDuty);
-  return int(Duty);
+
+  int PWMnew;
+  PWMnew = Duty;
+  static bool flag5;
+
+  if (abs(velocity) > (abs(_maxSpeed)) && velfl == 1 && rkpmax != 0) {
+
+    long errVel = abs(_maxSpeed) - abs(velocity);
+    float deltaVel = velocity - prevVelocity;
+
+    int deltaPWM = PWM2 - prevPWM;  //rkp * errVel
+    //Serial.println("");
+    //Serial.println("DelPWM: " + String(deltaPWM));
+    //Serial.println("DeltaVel: " + String(deltaVel));
+
+
+
+    PWMnew = PWM2;
+    prevPWM = PWM2;           //Сохранение предыдущего значения ШИМ
+    prevVelocity = velocity;  //Сохранение предыдущего значения скорости
+    //if (abs(velocity1) > abs(controlspeed)) {
+    if (rkp != 0.0) {
+      flag5 = 1;
+      //Serial.println("Bef: " + String(PWMnew));
+      PWMnew = constrain(abs(PWMnew) + rkp * errVel, defaultPWM, PWM2);
+      //Serial.println("Reducing: ");
+      //Serial.print(rkp, 6);
+      //Serial.println();
+    }
+
+    if (_maxSpeed < 0) {
+      PWMnew = -1 * abs(PWMnew);
+      defaultPWM = -1 * abs(defaultPWM);
+    }
+
+    //Serial.println("NEWPWM:" + String(PWMnew));
+
+    reduceFlag++;
+    velfl = 0;
+    flag5 = 1;
+    //return int(PWMnew);
+  }
+
+
+  prevVelocity = velocity;
+  prevPWM = PWM2;
+  velfl = 0;
+  if (flag5 == 1) {
+    //Serial.println("Aft: " + String(PWMnew));
+    flag5 = 0;
+  }
+
+  flag5 = 0;
+  Serial.println("Normal: " + String(PWMnew));
+
+  return int(PWMnew);
   //Serial.println(Duty);
   //}
   // if (Duty == 0) {Serial.println("st");}
   //return Dduty;
 }
 
-int PIDcalcVels(long setVelocity, long currentVelocity, float kp, float ki, float kd, float DTS, int dir, bool cutoff, bool off) {  //ПИД для 1 первого мотора
+int reduce(int PWM, long controlspeed, long velocity) {
 
-  //if (!off) {
-  static long prev_err; static float integral_vel; 
-  if (dir == -1) {
+  long errVel = controlspeed - velocity;
+  static long prevVelocity;
+  static long prevPWM;
 
-    setVelocity = -setVelocity;
+  if (PWM != prevPWM && velocity != prevVelocity) {
+    rkp = abs(velocity - prevVelocity) / abs(PWM - prevPWM);
   }
 
-  float Duty = 0;
-  long err1 = setVelocity - currentVelocity;
-  long deltainput = prev_err - err1;
-  prev_err = err1;
-  Duty = (float)(err1 * kpVel);
-  integral_vel += (float)err1 * kiVel * DTS;
-  Duty += (float)deltainput * kdVel / DTS + integral_vel;
+  prevPWM = PWM;            //Сохранение предыдущего значения ШИМ
+  prevVelocity = velocity;  //Сохранение предыдущего значения скорости
 
-  if (cutoff) {  // отсечка (для режимов позиции)
-    if (abs(err1) < stopzone) {
-      integral = 0;
-      Duty = 0;
-      // Serial.println("null");
-    }
-  }
+  int PWMnew = PWM;
+  //if (abs(velocity1) > abs(controlspeed)) {
 
-  Duty = constrain(Duty, -_maxDuty, _maxDuty);
-  return int(Duty);
-  //Serial.println(Duty);
+  int err = abs(velocity - controlspeed);
+  PWMnew = PWMnew + rkp * errVel;
   //}
-  // if (Duty == 0) {Serial.println("st");}
-  //return Dduty;
+  return PWMnew;
 }
 
 void movement(int _Duty, int motor) {  //Приведение ШИМ к минимальному. Передача сигнала
@@ -668,6 +793,8 @@ void setObor(float ob) {
   //_targetPos = abs(_targetPos);  //ratio - число тиков на оборот
 }
 
+
+
 void setDeg(long Deg) {
 
   if (Deg < 0) {
@@ -814,14 +941,15 @@ void VELS() {  //Вывод скоростей  столбцами
   //Serial.print(_duty);
   //Serial.print(controlPos);
   Serial.print(", ");
-  Serial.print(Velocity1);
+  Serial.print(Velocity2);
+  //Serial.print(Velocity1);
   //Serial.print(Velocity1);
   //Serial.print(_duty);
   //Serial.print(controlPos);
   Serial.print(", ");
 
   //Serial.print(_duty2);
-  Serial.print(Velocity2);
+  Serial.print(Velocity2N);
   //Serial.print(controlSpeed/1000);
   //Serial.print(", ");
   //Serial.print(Velocity2);
@@ -866,6 +994,7 @@ void inputData() {
       Serial.println("received velocity: " + String(receivedvelocity));
       //recalculation(1, receivedspeed);
       _maxSpeed = receivedvelocity;
+      defaultPWMFlag = 0;
     }
 
     if (dannie.indexOf("velMMS") != -1) {
@@ -876,6 +1005,7 @@ void inputData() {
       Serial.println("received velocity in mm/s: " + String(receivedvelMMS));
       //recalculation(1, receivedspeed);
       setSpeedMMS(receivedvelMMS);
+      defaultPWMFlag = 0;
     }
 
     if (dannie.indexOf("tpos") != -1) {
@@ -885,15 +1015,35 @@ void inputData() {
       long receivedtpos = constrain(tposrec.toInt(), -250000, 250000);
       Serial.println("received target position: " + String(receivedtpos));
       _targetPos = receivedtpos;
+      defaultPWMFlag = 0;
+      defaultPWM = 0;
     }
 
     if (dannie.indexOf("acc") != -1) {
 
       uint8_t accpos = dannie.indexOf("acc") + 3;
       String accrec = dannie.substring(accpos, accpos + 6);
-      int receivedacc = constrain(accrec.toInt(), 0, 25000);
+      int receivedacc = constrain(accrec.toInt(), 0, 40000);
       Serial.println("received acceleration: " + String(receivedacc));
       _accel = receivedacc;
+    }
+
+    if (dannie.indexOf("rk") != -1) {
+
+      uint8_t rkpos = dannie.indexOf("rk") + 2;
+      String rkrec = dannie.substring(rkpos, rkpos + 6);
+      float receivedrk = constrain(rkrec.toFloat(), 0, 100);
+      rkpmax = receivedrk;
+      Serial.println("received REDUCTION rk: " + String(rkpmax));
+    }
+
+    if (dannie.indexOf("rconst") != -1) {
+
+      uint8_t rconstpos = dannie.indexOf("rconst") + 6;
+      String rconstrec = dannie.substring(rconstpos, rconstpos + 6);
+      float receivedrconst = constrain(rconstrec.toFloat(), 0, 100);
+      rconst = receivedrconst;
+      Serial.println("received REDUCTION CONST: " + String(rconst));
     }
 
     if (dannie.indexOf("kp") != -1) {
@@ -947,8 +1097,10 @@ void inputData() {
       String Zrec = dannie.substring(Zpos, Zpos + 6);
       long receivedZ = constrain(Zrec.toInt(), -250000, 250000);
       Serial.println("received piston pusher Z shift in mm: " + String(receivedZ));
-      _targetPos += receivedZ*ratio;
+      _targetPos += receivedZ * ratio;
       _targetPos = constrain(_targetPos, -250000, 250000);
+      defaultPWMFlag = 0;
+      defaultPWM = 0;
     }
 
     if (dannie.indexOf("Zob") != -1) {
@@ -957,8 +1109,10 @@ void inputData() {
       String Zobrec = dannie.substring(Zobpos, Zobpos + 6);
       long receivedZob = constrain(Zobrec.toInt(), -200, 200);
       Serial.println("received piston pusher Z shift in turns: " + String(receivedZob));
-      _targetPos += receivedZob*ratio;
+      _targetPos += receivedZob * ratio;
       _targetPos = constrain(_targetPos, -250000, 250000);
+      defaultPWMFlag = 0;
+      defaultPWM = 0;
     }
 
     if (dannie.indexOf("Ztick") != -1) {
@@ -969,6 +1123,8 @@ void inputData() {
       Serial.println("received piston pusher Z shift in ticks: " + String(receivedZtick));
       _targetPos += receivedZtick;
       _targetPos = constrain(_targetPos, -250000, 250000);
+      defaultPWMFlag = 0;
+      defaultPWM = 0;
     }
 
     if (dannie.indexOf("tposMMS") != -1) {
@@ -978,7 +1134,8 @@ void inputData() {
       float receivedtposMMS = constrain(tposMMSrec.toFloat(), -200, 200);
       Serial.println("received target position in mm: " + String(receivedtposMMS));
       setMillimeters(receivedtposMMS);
-
+      defaultPWMFlag = 0;
+      defaultPWM = 0;
     }
 
     if (dannie.indexOf("tposob") != -1) {
@@ -988,7 +1145,8 @@ void inputData() {
       float receivedtposob = constrain(tposobrec.toFloat(), -200, 200);
       Serial.println("received target position in mm: " + String(receivedtposob));
       setObor(receivedtposob);
-
+      defaultPWMFlag = 0;
+      defaultPWM = 0;
     }
 
     volatile long bauds[] = { 1200, 2400, 4800, 9600, 19200, 31250, 38400, 57600, 74880, 115200, 230400, 250000, 460800, 500000 };
@@ -1055,7 +1213,7 @@ void inputData() {
   }
 }
 
-void Velocities(int period) {
+void Velocities(int period) {  //Функция определения скорости моторов
 
   // if (millis() - t1 >= period) {
 
@@ -1067,7 +1225,6 @@ void Velocities(int period) {
   encREF2copy = encREF2;  //int16_t
   encREF1 = encREF2 = 0;
   //interrupts();
-
   Velocity1 = (float)encREF1copy * 1000.0 / (float)period;
   //Velocity1 = filter(Velocity1);
   Velocity2 = (float)encREF2copy * 1000.0 / (float)period;
@@ -1080,20 +1237,34 @@ void Velocities(int period) {
   //}
 }
 
+void VelocitiesN() {  //Функция определения скорости моторов
+
+  static long periodF;
+  static long time;
+  periodF = (micros() - time)/1000; 
+  time = micros();
+
+  encREF1copyN = encREF1N;  //int16_t
+  encREF2copyN = encREF2N;  //int16_t
+  encREF1N = encREF2N = 0;
+  
+  Velocity1N = (float)encREF1copyN * 1000.0 / (float)periodF;
+  Velocity2N = (float)encREF2copyN * 1000.0 / (float)periodF;
+}
+
 int filter(int velocity) {
-    _buf[_count] = velocity;
-    if (++_count >= 3) _count = 0;
-    int middle = 0;
-    if ((_buf[0] <= _buf[1]) && (_buf[0] <= _buf[2])) {
-        middle = (_buf[1] <= _buf[2]) ? _buf[1] : _buf[2];
+  _buf[_count] = velocity;
+  if (++_count >= 3) _count = 0;
+  int middle = 0;
+  if ((_buf[0] <= _buf[1]) && (_buf[0] <= _buf[2])) {
+    middle = (_buf[1] <= _buf[2]) ? _buf[1] : _buf[2];
+  } else {
+    if ((_buf[1] <= _buf[0]) && (_buf[1] <= _buf[2])) {
+      middle = (_buf[0] <= _buf[2]) ? _buf[0] : _buf[2];
     } else {
-        if ((_buf[1] <= _buf[0]) && (_buf[1] <= _buf[2])) {
-            middle = (_buf[0] <= _buf[2]) ? _buf[0] : _buf[2];
-        }
-        else {
-            middle = (_buf[0] <= _buf[1]) ? _buf[0] : _buf[1];
-        }
+      middle = (_buf[0] <= _buf[1]) ? _buf[0] : _buf[1];
     }
-    _middle_f += (middle-_middle_f) * 0.7;
-    return _middle_f;
+  }
+  _middle_f += (middle - _middle_f);
+  return _middle_f;
 }
